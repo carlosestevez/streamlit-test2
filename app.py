@@ -2,183 +2,199 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from google import genai
-from google.genai import types
+import time
 
-# --- 1. Configuración de la Página ---
+# --- Configuración de la Página ---
 st.set_page_config(
-    page_title="Energy Dashboard IA",
-    page_icon="⚡",
+    page_title="IMDb Advanced Analytics & AI",
+    page_icon="🎬",
     layout="wide"
 )
 
-# --- 2. Carga y Limpieza de Datos ---
+# --- Carga y Limpieza de Datos (Cached) ---
 @st.cache_data
 def load_data():
-    url = "https://raw.githubusercontent.com/owid/energy-data/master/owid-energy-data.csv"
+    url = "https://raw.githubusercontent.com/Fifily/IMDB-Dataset-Analysis/refs/heads/main/imdb_top_1000.csv"
     try:
         df = pd.read_csv(url)
+        
+        # 1. Limpieza de 'Gross': Eliminar comas y convertir a float
+        # Primero aseguramos que sea string, quitamos comas, manejamos nulos y convertimos
+        df['Gross'] = df['Gross'].astype(str).str.replace(',', '').replace('nan', '0')
+        df['Gross'] = pd.to_numeric(df['Gross'], errors='coerce').fillna(0)
+        
+        # 2. Limpieza de 'Released_Year': Convertir a numérico, ignorar errores (ej: 'PG')
+        df['Released_Year'] = pd.to_numeric(df['Released_Year'], errors='coerce')
+        df = df.dropna(subset=['Released_Year']) # Eliminar filas donde el año no sea válido
+        df['Released_Year'] = df['Released_Year'].astype(int)
+        
+        return df
     except Exception as e:
-        st.error(f"Error cargando datos: {e}")
+        st.error(f"Error cargando los datos: {e}")
         return pd.DataFrame()
-
-    # Filtrar regiones agregadas
-    df = df[df['iso_code'].notna()]
-
-    # Rellenar NAs numéricos con 0
-    numeric_cols = df.select_dtypes(include=['number']).columns
-    df[numeric_cols] = df[numeric_cols].fillna(0)
-
-    # Definir columnas
-    renovables_cols = ['solar_consumption', 'wind_consumption', 'hydro_consumption']
-    fosiles_cols = ['coal_consumption', 'oil_consumption', 'gas_consumption']
-    
-    # Asegurar que existan
-    for col in renovables_cols + fosiles_cols:
-        if col not in df.columns:
-            df[col] = 0
-
-    df['Total Renovables'] = df[renovables_cols].sum(axis=1)
-    df['Total Fósiles'] = df[fosiles_cols].sum(axis=1)
-
-    return df
 
 df = load_data()
 
-# --- 3. Sidebar y Filtros ---
-st.sidebar.header("Configuración")
+# --- Sidebar ---
+with st.sidebar:
+    st.header("⚙️ Configuración")
+    
+    # Input tipo password para la API Key
+    api_key = st.text_input("Gemini API Key", type="password", placeholder="Inserta tu clave aquí...")
+    
+    st.divider()
+    
+    # Filtro: Director
+    directors = sorted(df['Director'].unique())
+    selected_director = st.selectbox("Selecciona Director", directors)
+    
+    # Filtro: Genre (Multiselect)
+    genres = sorted(df['Genre'].unique()) # Nota: En un caso real idealmente separaríamos géneros combinados
+    selected_genres = st.multiselect("Filtrar por Género (Opcional)", genres)
 
-# Seguridad: API Key
-api_key = st.sidebar.text_input("Gemini API Key", type="password", placeholder="Inserta tu clave aquí")
+# --- Filtrado de Datos ---
+filtered_df = df[df['Director'] == selected_director]
 
-# Filtros
-if not df.empty:
-    paises = sorted(df['country'].unique())
-    default_idx = paises.index('Spain') if 'Spain' in paises else 0
-    
-    selected_country = st.sidebar.selectbox("Selecciona País", paises, index=default_idx)
-    
-    country_data = df[df['country'] == selected_country]
-    min_year = int(country_data['year'].min())
-    max_year = int(country_data['year'].max())
-    
-    selected_year = st.sidebar.slider("Selecciona Año", min_year, max_year, max_year)
+if selected_genres:
+    # Filtramos si la columna Genre contiene cualquiera de los géneros seleccionados
+    # Usamos una expresión regex para buscar coincidencias flexibles
+    pattern = '|'.join(selected_genres)
+    filtered_df = filtered_df[filtered_df['Genre'].str.contains(pattern, case=False, na=False)]
+
+# --- Main Dashboard ---
+st.title(f"🎬 Dashboard: {selected_director}")
+
+if filtered_df.empty:
+    st.warning("No hay datos para los filtros seleccionados.")
 else:
-    st.stop()
-
-df_country = df[df['country'] == selected_country]
-df_year = df_country[df_country['year'] == selected_year]
-
-# --- 4. Interfaz Principal (KPIs) ---
-st.title(f"⚡ Dashboard Energético: {selected_country}")
-
-if not df_year.empty:
-    solar = df_year['solar_consumption'].values[0]
-    wind = df_year['wind_consumption'].values[0]
-    fossil = df_year['Total Fósiles'].values[0]
-    total_renovables = df_year['Total Renovables'].values[0]
-    
-    total_mix = total_renovables + fossil
-    pct_renovable = (total_renovables / total_mix * 100) if total_mix > 0 else 0
-
+    # --- KPIs ---
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Solar (TWh)", f"{solar:.2f}")
-    col2.metric("Eólica (TWh)", f"{wind:.2f}")
-    col3.metric("Fósiles (TWh)", f"{fossil:.2f}")
-    col4.metric("% Renovables", f"{pct_renovable:.1f}%")
-else:
-    st.warning("No hay datos para el año seleccionado.")
+    
+    total_gross = filtered_df['Gross'].sum()
+    avg_rating = filtered_df['IMDB_Rating'].mean()
+    avg_meta = filtered_df['Meta_score'].mean()
+    
+    # Película más taquillera
+    top_movie = filtered_df.loc[filtered_df['Gross'].idxmax()]['Series_Title'] if total_gross > 0 else "N/A"
 
-st.divider()
+    col1.metric("Total Recaudación", f"${total_gross:,.0f}")
+    col2.metric("Rating Promedio (IMDb)", f"{avg_rating:.1f}")
+    col3.metric("Meta Score Promedio", f"{avg_meta:.1f}")
+    col4.metric("Top Taquilla", top_movie)
 
-# --- 5. Visualización (Plotly) ---
-col_chart1, col_chart2 = st.columns(2)
+    st.divider()
 
-with col_chart1:
-    st.subheader("Evolución Histórica")
-    fig_line = px.line(
-        df_country, 
-        x='year', 
-        y=['Total Renovables', 'Total Fósiles'],
-        labels={'value': 'Consumo (TWh)', 'variable': 'Fuente'},
-        title=f"Evolución en {selected_country}"
-    )
-    # CORRECCIÓN AQUÍ: Usamos un diccionario para la leyenda, no 'legend_position'
-    fig_line.update_layout(
-        autosize=True, 
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
+    # --- Gráficos (Plotly) ---
+    c_chart1, c_chart2 = st.columns(2)
+
+    with c_chart1:
+        st.subheader("💰 Top 10 Recaudación")
+        # Top 10 por Gross
+        df_top_gross = filtered_df.sort_values(by='Gross', ascending=False).head(10)
+        
+        fig_bar = px.bar(
+            df_top_gross, 
+            x='Series_Title', 
+            y='Gross',
+            color='Gross',
+            color_continuous_scale='Greens'
         )
-    )
-    st.plotly_chart(fig_line)
+        # Nota: Usuario solicitó width="stretch" (concepto CSS) y NO usar use_container_width.
+        # Simulamos stretch visual configurando autosize en el layout de plotly.
+        fig_bar.update_layout(xaxis_title="Película", yaxis_title="Recaudación ($)", autosize=True)
+        st.plotly_chart(fig_bar) 
 
-with col_chart2:
-    st.subheader(f"Mix Energético ({selected_year})")
-    if not df_year.empty:
-        mix_data = {
-            'Fuente': ['Solar', 'Eólica', 'Hidro', 'Carbón', 'Petróleo', 'Gas'],
-            'Consumo': [
-                df_year['solar_consumption'].values[0],
-                df_year['wind_consumption'].values[0],
-                df_year['hydro_consumption'].values[0],
-                df_year['coal_consumption'].values[0],
-                df_year['oil_consumption'].values[0],
-                df_year['gas_consumption'].values[0]
-            ]
-        }
-        df_mix = pd.DataFrame(mix_data)
-        df_mix = df_mix[df_mix['Consumo'] > 0]
+    with c_chart2:
+        st.subheader("⭐ Rating vs Recaudación")
+        fig_scatter = px.scatter(
+            filtered_df,
+            x='IMDB_Rating',
+            y='Gross',
+            hover_data=['Series_Title', 'Released_Year'],
+            color='IMDB_Rating',
+            color_continuous_scale='Bluered'
+        )
+        fig_scatter.update_layout(xaxis_title="IMDb Rating", yaxis_title="Recaudación ($)", autosize=True)
+        st.plotly_chart(fig_scatter)
+
+    # --- Integración Gemini AI (Chat) ---
+    st.divider()
+    st.subheader("🤖 AI Cine-Analista")
+    st.info("Pregunta sobre la filmografía del director filtrado.")
+
+    # Inicializar historial de chat si no existe
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Mostrar mensajes previos
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Input del usuario
+    if prompt := st.chat_input("Ej: ¿Cuál es su película más aclamada y por qué?"):
         
-        fig_pie = px.pie(df_mix, values='Consumo', names='Fuente', hole=0.4)
-        fig_pie.update_layout(autosize=True)
-        st.plotly_chart(fig_pie)
-    else:
-        st.info("Datos insuficientes para el gráfico circular.")
+        if not api_key:
+            st.error("⚠️ Por favor ingresa tu Gemini API Key en el sidebar.")
+            st.stop()
 
-# --- 6. Integración de IA (Chatbot) ---
-st.divider()
-st.subheader("🤖 Analista Energético IA (Gemini 2.5)")
+        # Guardar mensaje usuario
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-chat_col, _ = st.columns([1, 0.01])
+        # --- Lógica Smart Context ---
+        # 1. Seleccionar columnas clave para ahorrar tokens
+        context_cols = ['Series_Title', 'Released_Year', 'IMDB_Rating', 'Gross', 'Director']
+        context_df = filtered_df[context_cols].copy()
 
-with chat_col:
-    if not api_key:
-        st.warning("🔒 Por favor, introduce tu API Key de Google en la barra lateral.")
-    else:
-        user_query = st.chat_input(f"Pregunta sobre la energía en {selected_country}...")
+        # 2. Regla de optimización: Si > 50 filas, enviar solo Top 50 por Rating
+        warning_msg = ""
+        if len(context_df) > 50:
+            context_df = context_df.sort_values(by='IMDB_Rating', ascending=False).head(50)
+            warning_msg = "(Nota para la IA: Se envía solo el Top 50 por rating debido al volumen de datos)."
         
-        if user_query:
-            # 1. Contexto
-            last_10_rows = df_country.sort_values(by='year', ascending=False).head(10)
-            csv_context = last_10_rows.to_csv(index=False)
-            
-            system_prompt = f"""
-            Eres un experto analista de energía senior. Tienes datos recientes (últimos 10 años) para {selected_country}:
-            {csv_context}
-            Responde a la pregunta del usuario basándote en estos datos. Sé conciso y usa Markdown.
-            """
+        data_context = context_df.to_csv(index=False)
 
+        # Prompt del Sistema
+        system_instruction = f"""
+        Eres un experto analista de cine. Tienes acceso a los datos de películas del director {selected_director}.
+        Datos disponibles (CSV):
+        {data_context}
+        {warning_msg}
+        
+        Responde a la pregunta del usuario basándote estrictamente en estos datos.
+        Si la respuesta no está en los datos, indícalo. Sé conciso y profesional.
+        """
+
+        # Generación con Streaming
+        with st.chat_message("assistant"):
             try:
-                # 2. Cliente y Streaming
+                # UX Pro: Status container
+                status_container = st.status("🎬 Analizando filmografía...", expanded=True)
+                
+                # Configuración Cliente Google GenAI (SDK 2026)
                 client = genai.Client(api_key=api_key)
                 
-                with st.status("Analizando datos energéticos...", expanded=True) as status:
-                    st.write("Conectando con Gemini 2.5 Flash...")
-                    
-                    response_stream = client.models.generate_content_stream(
-                        model='gemini-2.5-flash',
-                        contents=[system_prompt, user_query]
-                    )
-                    
-                    status.update(label="Respuesta generada", state="complete", expanded=False)
-
-                # 3. Respuesta
-                st.chat_message("assistant").write_stream(
-                    (chunk.text for chunk in response_stream if chunk.text)
+                # Llamada al modelo
+                response_stream = client.models.generate_content_stream(
+                    model="gemini-2.5-flash",
+                    contents=[system_instruction, prompt]
                 )
+                
+                status_container.update(label="💡 Respuesta generada", state="complete", expanded=False)
+                
+                # Función generadora para st.write_stream
+                def stream_generator():
+                    for chunk in response_stream:
+                        if chunk.text:
+                            yield chunk.text
+
+                full_response = st.write_stream(stream_generator())
+                
+                # Guardar respuesta en historial
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
 
             except Exception as e:
-                st.error(f"Error al conectar con la IA: {str(e)}")
+                status_container.update(label="❌ Error", state="error")
+                st.error(f"Error conectando con Gemini: {str(e)}")
