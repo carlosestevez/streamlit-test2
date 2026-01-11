@@ -14,39 +14,37 @@ st.set_page_config(
 # --- Carga y Limpieza de Datos (Cached) ---
 @st.cache_data
 def load_data():
-    # URL corregida (sin refs/heads para asegurar acceso raw)
-    url = "https://raw.githubusercontent.com/Fifily/IMDB-Dataset-Analysis/main/imdb_top_1000.csv"
+    # URL ESTABLE (Fuente original del dataset)
+    url = "https://raw.githubusercontent.com/harshitshankhdhar/IMDB-Dataset-Analysis/master/imdb_top_1000.csv"
+    
     try:
         df = pd.read_csv(url)
         
-        # 0. Limpieza de nombres de columnas (Crucial para evitar KeyError)
+        # 0. Limpieza de nombres de columnas (Crucial para evitar errores de espacios)
         df.columns = df.columns.str.strip()
         
-        # Verificar si la columna Director existe antes de seguir
-        if 'Director' not in df.columns:
-            st.error(f"Error: La columna 'Director' no se encontró. Columnas disponibles: {list(df.columns)}")
-            return pd.DataFrame()
-
         # 1. Limpieza de 'Gross'
-        df['Gross'] = df['Gross'].astype(str).str.replace(',', '').replace('nan', '0')
-        df['Gross'] = pd.to_numeric(df['Gross'], errors='coerce').fillna(0)
+        # Convertimos a string, quitamos comas y convertimos a número
+        if 'Gross' in df.columns:
+            df['Gross'] = df['Gross'].astype(str).str.replace(',', '').replace('nan', '0')
+            df['Gross'] = pd.to_numeric(df['Gross'], errors='coerce').fillna(0)
         
         # 2. Limpieza de 'Released_Year'
-        df['Released_Year'] = pd.to_numeric(df['Released_Year'], errors='coerce')
-        df = df.dropna(subset=['Released_Year']) 
-        df['Released_Year'] = df['Released_Year'].astype(int)
-        
+        if 'Released_Year' in df.columns:
+            df['Released_Year'] = pd.to_numeric(df['Released_Year'], errors='coerce')
+            df = df.dropna(subset=['Released_Year']) 
+            df['Released_Year'] = df['Released_Year'].astype(int)
+            
         return df
     except Exception as e:
-        st.error(f"Error fatal cargando los datos: {e}")
+        st.error(f"Error cargando los datos desde la URL de respaldo: {e}")
         return pd.DataFrame()
 
 df = load_data()
 
 # --- VALIDACIÓN DE SEGURIDAD ---
-# Si el dataframe está vacío por error de carga, detenemos la app aquí
 if df.empty:
-    st.warning("No se pudieron cargar los datos. Verifica la URL o la conexión.")
+    st.error("❌ No se pudieron cargar los datos. Verifica tu conexión a internet.")
     st.stop()
 
 # --- Sidebar ---
@@ -57,18 +55,19 @@ with st.sidebar:
     
     st.divider()
     
-    # Filtro: Director (Ahora seguro porque sabemos que df no está vacío)
-    directors = sorted(df['Director'].unique())
+    # Filtros
+    # Usamos sorted y unique para llenar los selectores
+    directors = sorted(df['Director'].dropna().unique())
     selected_director = st.selectbox("Selecciona Director", directors)
     
-    # Filtro: Genre
-    genres = sorted(df['Genre'].unique())
+    genres = sorted(df['Genre'].dropna().unique())
     selected_genres = st.multiselect("Filtrar por Género (Opcional)", genres)
 
 # --- Filtrado de Datos ---
 filtered_df = df[df['Director'] == selected_director]
 
 if selected_genres:
+    # Filtro flexible para géneros múltiples
     pattern = '|'.join(selected_genres)
     filtered_df = filtered_df[filtered_df['Genre'].str.contains(pattern, case=False, na=False)]
 
@@ -85,10 +84,10 @@ else:
     avg_rating = filtered_df['IMDB_Rating'].mean()
     avg_meta = filtered_df['Meta_score'].mean()
     
-    # Validación extra por si Gross es 0 en todas
+    # Obtener película más taquillera
     if not filtered_df['Gross'].empty and filtered_df['Gross'].max() > 0:
-        top_movie_row = filtered_df.loc[filtered_df['Gross'].idxmax()]
-        top_movie = top_movie_row['Series_Title']
+        top_movie_idx = filtered_df['Gross'].idxmax()
+        top_movie = filtered_df.loc[top_movie_idx, 'Series_Title']
     else:
         top_movie = "N/A"
 
@@ -151,16 +150,17 @@ else:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Smart Context
+        # Smart Context Logic
         context_cols = ['Series_Title', 'Released_Year', 'IMDB_Rating', 'Gross', 'Director']
-        # Aseguramos que existan las columnas antes de filtrar
-        available_cols = [c for c in context_cols if c in filtered_df.columns]
-        context_df = filtered_df[available_cols].copy()
+        # Validar que columnas existen antes de filtrar
+        valid_cols = [c for c in context_cols if c in filtered_df.columns]
+        context_df = filtered_df[valid_cols].copy()
 
         warning_msg = ""
+        # Optimización: si hay muchas filas, enviamos solo el Top 50 por rating
         if len(context_df) > 50:
             context_df = context_df.sort_values(by='IMDB_Rating', ascending=False).head(50)
-            warning_msg = "(Nota: Se envía solo el Top 50 por rating)."
+            warning_msg = "(Nota: Se envía solo el Top 50 por rating para optimizar el análisis)."
         
         data_context = context_df.to_csv(index=False)
 
