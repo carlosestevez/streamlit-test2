@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from google import genai
-import time
+import os
 
 # --- Configuración de la Página ---
 st.set_page_config(
@@ -11,189 +11,190 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- Carga y Limpieza de Datos (Cached) ---
+# --- Carga y Limpieza de Datos (Blindada) ---
 @st.cache_data
 def load_data():
-    # URL ESTABLE (Fuente original del dataset)
-    url = "https://raw.githubusercontent.com/harshitshankhdhar/IMDB-Dataset-Analysis/master/imdb_top_1000.csv"
+    # 1. Intentar cargar desde archivo local (Plan B manual)
+    local_file = "imdb_top_1000.csv"
+    if os.path.exists(local_file):
+        try:
+            df = pd.read_csv(local_file)
+            st.toast("📂 Datos cargados desde archivo local.", icon="✅")
+            return clean_dataframe(df)
+        except Exception as e:
+            st.warning(f"Archivo local encontrado pero corrupto: {e}")
+
+    # 2. Intentar cargar desde URLs espejo (Repositorios estables)
+    urls = [
+        # Fuente 1: Proyecto de Data Science de 'JaviRute' (4 años de antigüedad, rama master)
+        "https://raw.githubusercontent.com/JaviRute/top_1000_movies-data_science_project/master/imdb_top_1000.csv",
+        # Fuente 2: Proyecto de 'Elliott-dev' (3 años de antigüedad, rama master)
+        "https://raw.githubusercontent.com/Elliott-dev/Top-1000-IMDB-Rated-Movies-Analysis/master/imdb_top_1000.csv",
+        # Fuente 3: Fuente original de Krishna (rama main)
+        "https://raw.githubusercontent.com/krishna-koly/IMDB_TOP_1000/main/imdb_top_1000.csv"
+    ]
     
+    for url in urls:
+        try:
+            # Usamos on_bad_lines para saltar filas corruptas si las hubiera
+            df = pd.read_csv(url, on_bad_lines='skip')
+            
+            # Verificación rápida de que es el dataset correcto
+            if 'Director' in df.columns and 'Gross' in df.columns:
+                return clean_dataframe(df)
+            
+        except Exception as e:
+            # Continuar al siguiente espejo sin detenerse
+            continue 
+            
+    # Si llegamos aquí, todo falló
+    return pd.DataFrame()
+
+def clean_dataframe(df):
+    """Función auxiliar para limpiar el dataframe una vez cargado"""
     try:
-        df = pd.read_csv(url)
+        df.columns = df.columns.str.strip() # Limpiar espacios en nombres
         
-        # 0. Limpieza de nombres de columnas (Crucial para evitar errores de espacios)
-        df.columns = df.columns.str.strip()
-        
-        # 1. Limpieza de 'Gross'
-        # Convertimos a string, quitamos comas y convertimos a número
+        # Limpieza Gross
         if 'Gross' in df.columns:
             df['Gross'] = df['Gross'].astype(str).str.replace(',', '').replace('nan', '0')
             df['Gross'] = pd.to_numeric(df['Gross'], errors='coerce').fillna(0)
-        
-        # 2. Limpieza de 'Released_Year'
+            
+        # Limpieza Año
         if 'Released_Year' in df.columns:
             df['Released_Year'] = pd.to_numeric(df['Released_Year'], errors='coerce')
-            df = df.dropna(subset=['Released_Year']) 
+            df = df.dropna(subset=['Released_Year'])
             df['Released_Year'] = df['Released_Year'].astype(int)
             
         return df
     except Exception as e:
-        st.error(f"Error cargando los datos desde la URL de respaldo: {e}")
+        st.error(f"Error limpiando datos: {e}")
         return pd.DataFrame()
 
-df = load_data()
+# --- Ejecución de Carga ---
+with st.spinner("Conectando con repositorios de datos..."):
+    df = load_data()
 
-# --- VALIDACIÓN DE SEGURIDAD ---
+# --- VALIDACIÓN DE EMERGENCIA ---
 if df.empty:
-    st.error("❌ No se pudieron cargar los datos. Verifica tu conexión a internet.")
+    st.error("❌ ERROR CRÍTICO: No se pudo descargar el dataset.")
+    st.markdown("""
+    **Solución Manual:**
+    1. Descarga el archivo CSV [desde aquí](https://github.com/krishna-koly/IMDB_TOP_1000/blob/main/imdb_top_1000.csv).
+    2. Guárdalo en la carpeta de tu proyecto con el nombre `imdb_top_1000.csv`.
+    3. Recarga esta página.
+    """)
     st.stop()
 
 # --- Sidebar ---
 with st.sidebar:
     st.header("⚙️ Configuración")
-    
     api_key = st.text_input("Gemini API Key", type="password", placeholder="Inserta tu clave aquí...")
-    
     st.divider()
     
-    # Filtros
-    # Usamos sorted y unique para llenar los selectores
+    # Filtros seguros con dropna()
     directors = sorted(df['Director'].dropna().unique())
     selected_director = st.selectbox("Selecciona Director", directors)
     
-    genres = sorted(df['Genre'].dropna().unique())
-    selected_genres = st.multiselect("Filtrar por Género (Opcional)", genres)
+    genres_list = df['Genre'].dropna().unique()
+    genres = sorted(list(set([g.strip() for sublist in genres_list for g in sublist.split(',')]))) if not df.empty else []
+    selected_genres = st.multiselect("Filtrar por Género", genres)
 
-# --- Filtrado de Datos ---
+# --- Filtrado ---
 filtered_df = df[df['Director'] == selected_director]
 
 if selected_genres:
-    # Filtro flexible para géneros múltiples
     pattern = '|'.join(selected_genres)
-    filtered_df = filtered_df[filtered_df['Genre'].str.contains(pattern, case=False, na=False)]
+    filtered_df = filtered_df[filtered_df['Genre'].astype(str).str.contains(pattern, case=False, na=False)]
 
-# --- Main Dashboard ---
+# --- Dashboard ---
 st.title(f"🎬 Dashboard: {selected_director}")
 
 if filtered_df.empty:
-    st.warning("No hay datos para los filtros seleccionados.")
+    st.warning("No hay películas con esos filtros.")
 else:
-    # --- KPIs ---
+    # KPIs
     col1, col2, col3, col4 = st.columns(4)
-    
     total_gross = filtered_df['Gross'].sum()
     avg_rating = filtered_df['IMDB_Rating'].mean()
-    avg_meta = filtered_df['Meta_score'].mean()
     
-    # Obtener película más taquillera
+    meta_score = filtered_df['Meta_score'].mean() if 'Meta_score' in filtered_df.columns else 0
+    
+    top_movie = "N/A"
     if not filtered_df['Gross'].empty and filtered_df['Gross'].max() > 0:
-        top_movie_idx = filtered_df['Gross'].idxmax()
-        top_movie = filtered_df.loc[top_movie_idx, 'Series_Title']
-    else:
-        top_movie = "N/A"
+        top_movie = filtered_df.loc[filtered_df['Gross'].idxmax(), 'Series_Title']
 
     col1.metric("Total Recaudación", f"${total_gross:,.0f}")
-    col2.metric("Rating Promedio (IMDb)", f"{avg_rating:.1f}")
-    col3.metric("Meta Score Promedio", f"{avg_meta:.1f}")
+    col2.metric("Rating IMDb", f"{avg_rating:.1f}")
+    col3.metric("Meta Score", f"{meta_score:.1f}")
     col4.metric("Top Taquilla", top_movie)
 
     st.divider()
 
-    # --- Gráficos (Plotly) ---
-    c_chart1, c_chart2 = st.columns(2)
+    # Gráficos
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("💰 Top Recaudación")
+        df_chart = filtered_df.sort_values('Gross', ascending=False).head(10)
+        fig = px.bar(df_chart, x='Series_Title', y='Gross', color='Gross', color_continuous_scale='Greens')
+        fig.update_layout(autosize=True, xaxis_title="", yaxis_title="USD")
+        st.plotly_chart(fig, use_container_width=True) # Usamos container width para responsive
 
-    with c_chart1:
-        st.subheader("💰 Top 10 Recaudación")
-        df_top_gross = filtered_df.sort_values(by='Gross', ascending=False).head(10)
-        
-        fig_bar = px.bar(
-            df_top_gross, 
-            x='Series_Title', 
-            y='Gross',
-            color='Gross',
-            color_continuous_scale='Greens'
-        )
-        fig_bar.update_layout(xaxis_title="Película", yaxis_title="Recaudación ($)", autosize=True)
-        st.plotly_chart(fig_bar) 
+    with c2:
+        st.subheader("⭐ Rating vs Dinero")
+        fig2 = px.scatter(filtered_df, x='IMDB_Rating', y='Gross', hover_data=['Series_Title'], color='IMDB_Rating')
+        fig2.update_layout(autosize=True, xaxis_title="IMDb", yaxis_title="USD")
+        st.plotly_chart(fig2, use_container_width=True)
 
-    with c_chart2:
-        st.subheader("⭐ Rating vs Recaudación")
-        fig_scatter = px.scatter(
-            filtered_df,
-            x='IMDB_Rating',
-            y='Gross',
-            hover_data=['Series_Title', 'Released_Year'],
-            color='IMDB_Rating',
-            color_continuous_scale='Bluered'
-        )
-        fig_scatter.update_layout(xaxis_title="IMDb Rating", yaxis_title="Recaudación ($)", autosize=True)
-        st.plotly_chart(fig_scatter)
-
-    # --- Integración Gemini AI (Chat) ---
+    # --- Gemini Chat ---
     st.divider()
-    st.subheader("🤖 AI Cine-Analista")
-    st.info("Pregunta sobre la filmografía del director filtrado.")
-
+    st.subheader("🤖 Cine-AI")
+    
     if "messages" not in st.session_state:
         st.session_state.messages = []
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if prompt := st.chat_input("Ej: ¿Cuál es su película más aclamada y por qué?"):
         
-        if not api_key:
-            st.error("⚠️ Por favor ingresa tu Gemini API Key en el sidebar.")
-            st.stop()
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
+    if prompt := st.chat_input("Pregunta sobre este director..."):
+        if not api_key:
+            st.error("⚠️ Falta la API Key")
+            st.stop()
+            
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
-
-        # Smart Context Logic
-        context_cols = ['Series_Title', 'Released_Year', 'IMDB_Rating', 'Gross', 'Director']
-        # Validar que columnas existen antes de filtrar
-        valid_cols = [c for c in context_cols if c in filtered_df.columns]
-        context_df = filtered_df[valid_cols].copy()
-
-        warning_msg = ""
-        # Optimización: si hay muchas filas, enviamos solo el Top 50 por rating
-        if len(context_df) > 50:
-            context_df = context_df.sort_values(by='IMDB_Rating', ascending=False).head(50)
-            warning_msg = "(Nota: Se envía solo el Top 50 por rating para optimizar el análisis)."
+            
+        # Preparar contexto optimizado
+        cols = ['Series_Title', 'Released_Year', 'IMDB_Rating', 'Gross', 'Director']
+        cols = [c for c in cols if c in filtered_df.columns]
         
-        data_context = context_df.to_csv(index=False)
-
-        system_instruction = f"""
-        Eres un experto analista de cine. Tienes acceso a los datos de películas del director {selected_director}.
-        Datos disponibles (CSV):
-        {data_context}
-        {warning_msg}
+        ctx_df = filtered_df[cols].copy()
+        if len(ctx_df) > 50:
+            ctx_df = ctx_df.sort_values('IMDB_Rating', ascending=False).head(50)
+            
+        csv_txt = ctx_df.to_csv(index=False)
         
-        Responde a la pregunta del usuario basándote estrictamente en estos datos.
-        """
+        sys_prompt = f"Eres un experto en cine. Analiza estos datos del director {selected_director}:\n{csv_txt}\nResponde la pregunta del usuario."
 
         with st.chat_message("assistant"):
+            status = st.status("Analizando...", expanded=True)
             try:
-                status_container = st.status("🎬 Analizando filmografía...", expanded=True)
-                
                 client = genai.Client(api_key=api_key)
-                
-                response_stream = client.models.generate_content_stream(
+                response = client.models.generate_content_stream(
                     model="gemini-2.5-flash",
-                    contents=[system_instruction, prompt]
+                    contents=[sys_prompt, prompt]
                 )
+                status.update(label="Listo", state="complete", expanded=False)
                 
-                status_container.update(label="💡 Respuesta generada", state="complete", expanded=False)
+                def streamer():
+                    for chunk in response:
+                        if chunk.text: yield chunk.text
+                        
+                full_res = st.write_stream(streamer())
+                st.session_state.messages.append({"role": "assistant", "content": full_res})
                 
-                def stream_generator():
-                    for chunk in response_stream:
-                        if chunk.text:
-                            yield chunk.text
-
-                full_response = st.write_stream(stream_generator())
-                st.session_state.messages.append({"role": "assistant", "content": full_response})
-
             except Exception as e:
-                status_container.update(label="❌ Error", state="error")
-                st.error(f"Error conectando con Gemini: {str(e)}")
+                status.update(label="Error", state="error")
+                st.error(f"Error AI: {e}")
