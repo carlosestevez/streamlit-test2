@@ -121,4 +121,64 @@ with col_chart2:
         mix_data = {
             'Fuente': ['Solar', 'Eólica', 'Hidro', 'Carbón', 'Petróleo', 'Gas'],
             'Consumo': [
-                df_year['solar_consumption'].values
+                df_year['solar_consumption'].values[0],
+                df_year['wind_consumption'].values[0],
+                df_year['hydro_consumption'].values[0],
+                df_year['coal_consumption'].values[0],
+                df_year['oil_consumption'].values[0],
+                df_year['gas_consumption'].values[0]
+            ]
+        }
+        df_mix = pd.DataFrame(mix_data)
+        df_mix = df_mix[df_mix['Consumo'] > 0]
+        
+        fig_pie = px.pie(df_mix, values='Consumo', names='Fuente', hole=0.4)
+        fig_pie.update_layout(autosize=True)
+        st.plotly_chart(fig_pie)
+    else:
+        st.info("Datos insuficientes para el gráfico circular.")
+
+# --- 6. Integración de IA (Chatbot) ---
+st.divider()
+st.subheader("🤖 Analista Energético IA (Gemini 2.5)")
+
+chat_col, _ = st.columns([1, 0.01])
+
+with chat_col:
+    if not api_key:
+        st.warning("🔒 Por favor, introduce tu API Key de Google en la barra lateral.")
+    else:
+        user_query = st.chat_input(f"Pregunta sobre la energía en {selected_country}...")
+        
+        if user_query:
+            # 1. Contexto
+            last_10_rows = df_country.sort_values(by='year', ascending=False).head(10)
+            csv_context = last_10_rows.to_csv(index=False)
+            
+            system_prompt = f"""
+            Eres un experto analista de energía senior. Tienes datos recientes (últimos 10 años) para {selected_country}:
+            {csv_context}
+            Responde a la pregunta del usuario basándote en estos datos. Sé conciso y usa Markdown.
+            """
+
+            try:
+                # 2. Cliente y Streaming
+                client = genai.Client(api_key=api_key)
+                
+                with st.status("Analizando datos energéticos...", expanded=True) as status:
+                    st.write("Conectando con Gemini 2.5 Flash...")
+                    
+                    response_stream = client.models.generate_content_stream(
+                        model='gemini-2.5-flash',
+                        contents=[system_prompt, user_query]
+                    )
+                    
+                    status.update(label="Respuesta generada", state="complete", expanded=False)
+
+                # 3. Respuesta
+                st.chat_message("assistant").write_stream(
+                    (chunk.text for chunk in response_stream if chunk.text)
+                )
+
+            except Exception as e:
+                st.error(f"Error al conectar con la IA: {str(e)}")
